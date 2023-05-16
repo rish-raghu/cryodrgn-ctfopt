@@ -115,6 +115,7 @@ class PoseSearch:
         images_tilt: Optional[torch.Tensor] = None,
         angles_inplane: Optional[np.ndarray] = None,
         ctf_i: Optional[torch.Tensor] = None,
+        barf=None
     ) -> torch.Tensor:
         """
         images: B x T x Npix
@@ -148,7 +149,7 @@ class PoseSearch:
             x = x.to(device)
             # logger.info(f"Evaluating model on {x.shape} = {x.nelement() // 3} points")
             with torch.no_grad():
-                y_hat = self.model(x)
+                y_hat = self.model(x, barf=barf)
                 y_hat = y_hat.float()
             y_hat = y_hat.view(
                 -1, 1, NQ, YX
@@ -334,6 +335,7 @@ class PoseSearch:
         images_tilt: Optional[torch.Tensor] = None,
         init_poses: Optional[torch.Tensor] = None,
         ctf_i=None,
+        barf=None
     ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         images = to_tensor(images)  # type: ignore
         images_tilt = to_tensor(images_tilt)
@@ -368,6 +370,7 @@ class PoseSearch:
                 else None,
                 angles_inplane=self.base_inplane if FAST_INPLANE else None,
                 ctf_i=ctf_i,
+                barf=barf
             )
             keepB, keepT, keepQ = self.keep_matrix(
                 loss, B, self.nkeptposes
@@ -415,6 +418,7 @@ class PoseSearch:
                 if do_tilt
                 else None,  # (B*24, 4, Npoints)
                 ctf_i=ctf_i[keepB] if ctf_i is not None else ctf_i,
+                barf=barf
             )  # sum(NP), 8
 
             # nkeptposes = 1

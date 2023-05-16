@@ -17,6 +17,7 @@ from torch.utils.data import DataLoader
 from cryodrgn import ctf, dataset, lie_tools, models, mrc, utils
 from cryodrgn.lattice import Lattice
 from cryodrgn.pose_search import PoseSearch
+from cryodrgn.barf_schedule import get_barf_schedule
 
 logger = logging.getLogger(__name__)
 
@@ -261,6 +262,11 @@ def add_args(parser):
         help="Num frequencies in positional encoding (default: D/2)",
     )
     group.add_argument(
+        "--barf-epochs",
+        type=int,
+        help="Number of epochs to scale up BARF parameter (default: no BARF)"
+    )
+    group.add_argument(
         "--domain",
         choices=("hartley", "fourier"),
         default="hartley",
@@ -283,10 +289,10 @@ def add_args(parser):
 
 
 def save_checkpoint(
-    model, lattice, pose, optim, epoch, norm, out_mrc, out_weights, out_poses
+    model, lattice, pose, optim, epoch, norm, out_mrc, out_weights, out_poses, barf=None
 ):
     model.eval()
-    vol = model.eval_volume(lattice.coords, lattice.D, lattice.extent, norm)
+    vol = model.eval_volume(lattice.coords, lattice.D, lattice.extent, norm, barf=barf)
     mrc.write(out_mrc, vol.astype(np.float32))
     torch.save(
         {
@@ -303,7 +309,7 @@ def save_checkpoint(
         pickle.dump((rot, trans / model.D), f)
 
 
-def pretrain(model, lattice, optim, batch, tilt=None):
+def pretrain(model, lattice, optim, batch, tilt=None, barf=None):
     y, yt = batch
     B = y.size(0)
     model.train()
@@ -311,8 +317,8 @@ def pretrain(model, lattice, optim, batch, tilt=None):
 
     mask = lattice.get_circular_mask(lattice.D // 2)
 
-    def gen_slice(R):
-        slice_ = model(lattice.coords[mask] @ R)
+    def gen_slice(R, barf=None):
+        slice_ = model(lattice.coords[mask] @ R, barf=barf)
         return slice_.view(B, -1)
 
     rot = lie_tools.random_SO3(B, device=y.device)
@@ -321,10 +327,10 @@ def pretrain(model, lattice, optim, batch, tilt=None):
     if tilt is not None:
         yt = yt.view(B, -1)[:, mask]
         loss = 0.5 * F.mse_loss(gen_slice(rot), y) + 0.5 * F.mse_loss(
-            gen_slice(tilt @ rot), yt
+            gen_slice(tilt @ rot, barf=barf), yt
         )
     else:
-        loss = F.mse_loss(gen_slice(rot), y)
+        loss = F.mse_loss(gen_slice(rot, barf=barf), y)
     loss.backward()
     optim.step()
     return loss.item()
@@ -363,6 +369,7 @@ def train(
     poses=None,
     base_pose=None,
     ctf_params=None,
+    barf=None
 ):
     y, yt = batch
     B = y.size(0)
@@ -386,7 +393,7 @@ def train(
         model.eval()
         with torch.no_grad():
             rot, trans, base_pose = ps.opt_theta_trans(
-                y, images_tilt=yt, init_poses=base_pose, ctf_i=ctf_i
+                y, images_tilt=yt, init_poses=base_pose, ctf_i=ctf_i, barf=barf
             )
             base_pose = base_pose.detach().cpu().numpy()
 
@@ -394,8 +401,8 @@ def train(
     mask = lattice.get_circular_mask(lattice.D // 2)
     # mask = lattice.get_circular_mask(ps.Lmax)
 
-    def gen_slice(R):
-        slice_ = model(lattice.coords[mask] @ R).view(B, -1)
+    def gen_slice(R, barf=None):
+        slice_ = model(lattice.coords[mask] @ R, barf=barf).view(B, -1)
         if ctf_i is not None:
             slice_ *= ctf_i.view(B, -1)[:, mask]
         return slice_
@@ -417,11 +424,11 @@ def train(
             yt = translate(yt)
 
     if tilt_rot is not None:
-        loss = 0.5 * F.mse_loss(gen_slice(rot), y) + 0.5 * F.mse_loss(
-            gen_slice(tilt_rot @ rot), yt
+        loss = 0.5 * F.mse_loss(gen_slice(rot, barf=barf), y) + 0.5 * F.mse_loss(
+            gen_slice(tilt_rot @ rot, barf=barf), yt
         )
     else:
-        loss = F.mse_loss(gen_slice(rot), y)
+        loss = F.mse_loss(gen_slice(rot, barf=barf), y)
     loss.backward()
     optim.step()
     save_pose = [rot.detach().cpu().numpy()]
@@ -585,6 +592,11 @@ def main(args):
     else:
         start_epoch = 0
 
+    if args.barf_epochs:
+        enc_dim = args.pe_dim if args.pe_dim else D//2
+        barf_end_iter = args.barf_epochs * Nimg + args.pretrain
+        barf_schedule = get_barf_schedule(barf_end_iter, enc_dim)
+
     data_iterator = DataLoader(data, batch_size=args.batch_size, shuffle=True)
 
     # pretrain decoder with random poses
@@ -598,14 +610,17 @@ def main(args):
                 if tilt is None
                 else (batch[0].to(device), batch[1].to(device))
             )
-            loss = pretrain(model, lattice, optim, batch, tilt=ps.tilt)
+            barf = barf_schedule(global_it) if args.barf_epochs else None
+            loss = pretrain(model, lattice, optim, batch, tilt=ps.tilt, barf=barf)
             if global_it % args.log_interval == 0:
-                logger.info(f"[Pretrain Iteration {global_it}] loss={loss:4f}")
+                logger.info("[Pretrain Iteration {}] loss={:4f}  barf={:.3f}".format(
+                    global_it, loss, barf or -1
+                ))
             if global_it > args.pretrain:
                 break
     out_mrc = "{}/pretrain.reconstruct.mrc".format(args.outdir)
     model.eval()
-    vol = model.eval_volume(lattice.coords, lattice.D, lattice.extent, tuple(data.norm))
+    vol = model.eval_volume(lattice.coords, lattice.D, lattice.extent, tuple(data.norm), barf=barf)
     mrc.write(out_mrc, vol.astype(np.float32))
 
     # reset model after pretraining
@@ -668,6 +683,7 @@ def main(args):
                 cc = 0
 
             c = ctf_params[ind] if ctf_params is not None else None
+            barf = barf_schedule(epoch * Nimg + batch_it + args.pretrain) if args.barf_epochs else None
             loss_item, pose, base_pose = train(
                 model,
                 lattice,
@@ -679,6 +695,7 @@ def main(args):
                 poses=p,
                 base_pose=bp,
                 ctf_params=c,
+                barf=barf
             )
             poses.append((ind.cpu().numpy(), pose))
             base_poses.append((ind_np, base_pose))
@@ -686,8 +703,8 @@ def main(args):
             loss_accum += loss_item * len(batch[0])
             if batch_it % args.log_interval == 0:
                 logger.info(
-                    "# [Train Epoch: {}/{}] [{}/{} images] loss={:.4f}".format(
-                        epoch + 1, args.num_epochs, batch_it, Nimg, loss_item
+                    "# [Train Epoch: {}/{}] [{}/{} images] loss={:.4f} barf={:.3f}".format(
+                        epoch + 1, args.num_epochs, batch_it, Nimg, loss_item, barf or -1
                     )
                 )
         logger.info(
@@ -714,6 +731,7 @@ def main(args):
                 out_mrc,
                 out_weights,
                 out_poses,
+                barf=barf
             )
 
     if epoch is not None:
@@ -731,6 +749,7 @@ def main(args):
             out_mrc,
             out_weights,
             out_poses,
+            barf=barf
         )
 
         td = dt.now() - t1
