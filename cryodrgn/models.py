@@ -205,7 +205,7 @@ class Decoder(nn.Module):
         D: int,
         extent: float,
         norm: Norm,
-        zval: Optional[np.ndarray] = None,
+        zval: Optional[np.ndarray] = None
     ) -> np.ndarray:
         """
         Evaluate the model on a DxDxD volume
@@ -277,11 +277,12 @@ class PositionalDecoder(Decoder):
         else:
             self.rand_feats = None
 
-    def positional_encoding_geom(self, coords):
+    def positional_encoding_geom(self, coords, barf=None):
         """Expand coordinates in the Fourier basis with geometrically spaced wavelengths from 2/D to 2pi"""
         if self.enc_type == "gaussian":
             return self.random_fourier_encoding(coords)
-        freqs = torch.arange(self.enc_dim, dtype=torch.float, device=coords.device)
+        #freqs = torch.arange(self.enc_dim, dtype=torch.float, device=coords.device)
+        freqs = torch.arange(self.enc_dim-1, -1, -1, dtype=torch.float, device=coords.device)
         if self.enc_type == "geom_ft":
             freqs = (
                 self.DD * np.pi * (2.0 / self.DD) ** (freqs / (self.enc_dim - 1))
@@ -309,6 +310,23 @@ class PositionalDecoder(Decoder):
         k = coords[..., 0:3, :] * freqs  # B x 3 x D2
         s = torch.sin(k)  # B x 3 x D2
         c = torch.cos(k)  # B x 3 x D2
+        
+        if barf:
+            w = torch.zeros(self.enc_dim)
+            for i in range(self.enc_dim):
+                if barf < i: 
+                    w[i] = 0
+                elif 0 <= barf-i < 1:
+                    w[i] = (1-np.cos((barf-i)*np.pi))/2
+                else:
+                    w[i] = 1
+            if len(coords.shape)==4:
+                w = torch.tile(w, [coords.shape[0], coords.shape[1], coords.shape[2], 1]).to(device=coords.device)
+            elif len(coords.shape)==3:
+                w = torch.tile(w, [coords.shape[0], coords.shape[1], 1]).to(device=coords.device)
+            s = w*s
+            c = w*c
+        
         x = torch.cat([s, c], -1)  # B x 3 x D
         x = x.view(*coords.shape[:-2], self.in_dim - self.zdim)  # B x in_dim-zdim
         if self.zdim > 0:
@@ -349,10 +367,10 @@ class PositionalDecoder(Decoder):
             assert x.shape[-1] == self.in_dim
         return x
 
-    def forward(self, coords: Tensor) -> Tensor:
+    def forward(self, coords: Tensor, barf=None) -> Tensor:
         """Input should be coordinates from [-.5,.5]"""
         assert (coords[..., 0:3].abs() - 0.5 < 1e-4).all()
-        return self.decoder(self.positional_encoding_geom(coords))
+        return self.decoder(self.positional_encoding_geom(coords, barf))
 
     def eval_volume(
         self,
@@ -361,6 +379,7 @@ class PositionalDecoder(Decoder):
         extent: float,
         norm: Norm,
         zval: Optional[np.ndarray] = None,
+        barf=None
     ) -> np.ndarray:
         """
         Evaluate the model on a DxDxD volume
@@ -391,7 +410,7 @@ class PositionalDecoder(Decoder):
             if zval is not None:
                 x = torch.cat((x, z.expand(x.shape[0], zdim)), dim=-1)
             with torch.no_grad():
-                y = self.forward(x)
+                y = self.forward(x, barf=barf)
                 y = y.view(D, D).cpu().numpy()
             vol_f[i] = y
         vol_f = vol_f * norm[1] + norm[0]
@@ -439,11 +458,12 @@ class FTPositionalDecoder(Decoder):
         else:
             self.rand_feats = None
 
-    def positional_encoding_geom(self, coords: Tensor) -> Tensor:
+    def positional_encoding_geom(self, coords: Tensor, barf=None) -> Tensor:
         """Expand coordinates in the Fourier basis with geometrically spaced wavelengths from 2/D to 2pi"""
         if self.enc_type == "gaussian":
             return self.random_fourier_encoding(coords)
-        freqs = torch.arange(self.enc_dim, dtype=torch.float, device=coords.device)
+        #freqs = torch.arange(self.enc_dim, dtype=torch.float, device=coords.device)
+        freqs = torch.arange(self.enc_dim-1, -1, -1, dtype=torch.float, device=coords.device)
         if self.enc_type == "geom_ft":
             freqs = (
                 self.DD * np.pi * (2.0 / self.DD) ** (freqs / (self.enc_dim - 1))
@@ -471,6 +491,23 @@ class FTPositionalDecoder(Decoder):
         k = coords[..., 0:3, :] * freqs  # B x 3 x D2
         s = torch.sin(k)  # B x 3 x D2
         c = torch.cos(k)  # B x 3 x D2
+
+        if barf:
+            w = torch.zeros(self.enc_dim)
+            for i in range(self.enc_dim):
+                if barf < i: 
+                    w[i] = 0
+                elif 0 <= barf-i < 1:
+                    w[i] = (1-np.cos((barf-i)*np.pi))/2
+                else:
+                    w[i] = 1
+            if len(coords.shape)==4:
+                w = torch.tile(w, [coords.shape[0], coords.shape[1], coords.shape[2], 1]).to(device=coords.device)
+            elif len(coords.shape)==3:
+                w = torch.tile(w, [coords.shape[0], coords.shape[1], 1]).to(device=coords.device)
+            s = w*s
+            c = w*c
+
         x = torch.cat([s, c], -1)  # B x 3 x D
         x = x.view(*coords.shape[:-2], self.in_dim - self.zdim)  # B x in_dim-zdim
         if self.zdim > 0:
@@ -511,7 +548,7 @@ class FTPositionalDecoder(Decoder):
             assert x.shape[-1] == self.in_dim
         return x
 
-    def forward(self, lattice: Tensor) -> Tensor:
+    def forward(self, lattice: Tensor, barf=None) -> Tensor:
         """
         Call forward on central slices only
             i.e. the middle pixel should be (0,0,0)
@@ -526,7 +563,7 @@ class FTPositionalDecoder(Decoder):
             lattice[..., 0:3].mean()
         )
         image = torch.empty(lattice.shape[:-1], device=lattice.device)
-        top_half = self.decode(lattice[..., 0:cc, :])
+        top_half = self.decode(lattice[..., 0:cc, :], barf=barf)
         image[..., 0:cc] = top_half[..., 0] - top_half[..., 1]
         # the bottom half of the image is the complex conjugate of the top half
         image[..., cc:] = (top_half[..., 0] + top_half[..., 1])[
@@ -534,7 +571,7 @@ class FTPositionalDecoder(Decoder):
         ]
         return image
 
-    def decode(self, lattice: Tensor):
+    def decode(self, lattice: Tensor, barf=None):
         """Return FT transform"""
         assert (lattice[..., 0:3].abs() - 0.5 < 1e-4).all()
         # convention: only evalute the -z points
@@ -542,7 +579,7 @@ class FTPositionalDecoder(Decoder):
         new_lattice = lattice.clone()
         # negate lattice coordinates where z > 0
         new_lattice[..., 0:3][w] *= -1
-        result = self.decoder(self.positional_encoding_geom(new_lattice))
+        result = self.decoder(self.positional_encoding_geom(new_lattice, barf=barf))
         # replace with complex conjugate to get correct values for original lattice positions
         result[..., 1][w] *= -1
         return result
@@ -554,6 +591,7 @@ class FTPositionalDecoder(Decoder):
         extent: float,
         norm: Norm,
         zval: Optional[np.ndarray] = None,
+        barf=None
     ) -> np.ndarray:
         """
         Evaluate the model on a DxDxD volume
@@ -585,9 +623,9 @@ class FTPositionalDecoder(Decoder):
                 x = torch.cat((x, z.expand(x.shape[0], zdim)), dim=-1)
             with torch.no_grad():
                 if dz == 0.0:
-                    y = self.forward(x)
+                    y = self.forward(x, barf=barf)
                 else:
-                    y = self.decode(x)
+                    y = self.decode(x, barf=barf)
                     y = y[..., 0] - y[..., 1]
                 slice_ = torch.zeros(D**2, device="cpu")
                 slice_[keep] = y.cpu()

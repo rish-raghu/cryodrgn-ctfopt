@@ -23,6 +23,7 @@ from cryodrgn import ctf, dataset, models, mrc
 from cryodrgn.lattice import Lattice
 from cryodrgn.pose import PoseTracker
 from cryodrgn.models import DataParallelDecoder, Decoder
+from cryodrgn.barf_schedule import get_barf_schedule
 import cryodrgn.config
 
 logger = logging.getLogger(__name__)
@@ -210,6 +211,11 @@ def add_args(parser):
         help="Num frequencies in positional encoding (default: D/2)",
     )
     group.add_argument(
+        "--barf-epochs",
+        type=int,
+        help="Number of epochs to scale up BARF parameter (default: no BARF)"
+    )
+    group.add_argument(
         "--domain",
         choices=("hartley", "fourier"),
         default="fourier",
@@ -232,10 +238,10 @@ def add_args(parser):
 
 
 def save_checkpoint(
-    model: Decoder, lattice, optim, epoch, norm, Apix, out_mrc, out_weights
+    model: Decoder, lattice, optim, epoch, norm, Apix, out_mrc, out_weights, barf=None
 ):
     model.eval()
-    vol = model.eval_volume(lattice.coords, lattice.D, lattice.extent, norm)
+    vol = model.eval_volume(lattice.coords, lattice.D, lattice.extent, norm, barf=barf)
     mrc.write(out_mrc, vol.astype(np.float32), Apix=Apix)
     torch.save(
         {
@@ -258,17 +264,18 @@ def train(
     ctf_params=None,
     use_amp=False,
     scaler=None,
+    barf=None
 ):
     model.train()
     optim.zero_grad()
     B = y.size(0)
     D = lattice.D
 
-    def run_model(y):
+    def run_model(y, barf):
         """Helper function"""
         # reconstruct circle of pixels instead of whole image
         mask = lattice.get_circular_mask(D // 2)
-        yhat = model(lattice.coords[mask] @ rot).view(B, -1)
+        yhat = model(lattice.coords[mask] @ rot, barf=barf).view(B, -1)
         if ctf_params is not None:
             freqs = lattice.freqs2d[mask]
             freqs = freqs.unsqueeze(0).expand(B, *freqs.shape) / ctf_params[:, 0].view(
@@ -283,9 +290,9 @@ def train(
     # Cast operations to mixed precision if using torch.cuda.amp.GradScaler()
     if scaler is not None:
         with torch.cuda.amp.autocast_mode.autocast():
-            loss = run_model(y)
+            loss = run_model(y, barf)
     else:
-        loss = run_model(y)
+        loss = run_model(y, barf)
 
     if use_amp:
         if scaler is not None:  # torch mixed precision
@@ -498,6 +505,11 @@ def main(args):
             f"WARNING: --multigpu selected, but {torch.cuda.device_count()} GPUs detected"
         )
 
+    if args.barf_epochs:
+        enc_dim = args.pe_dim if args.pe_dim else D//2
+        barf_end_iter = args.barf_epochs * Nimg
+        barf_schedule = get_barf_schedule(barf_end_iter, enc_dim)
+
     # train
     data_generator = DataLoader(data, batch_size=args.batch_size, shuffle=True)
     epoch = None
@@ -512,6 +524,7 @@ def main(args):
                 pose_optimizer.zero_grad()
             r, t = posetracker.get_pose(ind)
             c = ctf_params[ind] if ctf_params is not None else None
+            barf = barf_schedule(epoch * Nimg + batch_it) if args.barf_epochs else None
             loss_item = train(
                 model,
                 lattice,
@@ -522,14 +535,15 @@ def main(args):
                 c,
                 use_amp=args.amp,
                 scaler=scaler,
+                barf=barf
             )
             if pose_optimizer is not None and epoch >= args.pretrain:
                 pose_optimizer.step()
             loss_accum += loss_item * len(ind)
             if batch_it % args.log_interval == 0:
                 logger.info(
-                    "# [Train Epoch: {}/{}] [{}/{} images] loss={:.6f}".format(
-                        epoch + 1, args.num_epochs, batch_it, Nimg, loss_item
+                    "# [Train Epoch: {}/{}] [{}/{} images] loss={:.6f} barf={:.3f}".format(
+                        epoch + 1, args.num_epochs, batch_it, Nimg, loss_item, barf or -1
                     )
                 )
         logger.info(
@@ -541,7 +555,7 @@ def main(args):
             out_mrc = "{}/reconstruct.{}.mrc".format(args.outdir, epoch)
             out_weights = "{}/weights.{}.pkl".format(args.outdir, epoch)
             save_checkpoint(
-                model, lattice, optim, epoch, data.norm, Apix, out_mrc, out_weights
+                model, lattice, optim, epoch, data.norm, Apix, out_mrc, out_weights, barf=barf
             )
             if args.do_pose_sgd and epoch >= args.pretrain:
                 out_pose = "{}/pose.{}.pkl".format(args.outdir, epoch)
