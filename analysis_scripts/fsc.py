@@ -67,10 +67,12 @@ def main(args):
     w = np.where(fsc < 0.5)
     if w:
         logger.info("0.5: {}".format(1 / x[w[0]] * args.Apix))
+        with open(args.o, "a") as f: f.write("0.5: {}\n".format(1 / x[w[0]] * args.Apix))
 
     w = np.where(fsc < 0.143)
     if w:
         logger.info("0.143: {}".format(1 / x[w[0]] * args.Apix))
+        with open(args.o, "a") as f: f.write("0.143: {}\n".format(1 / x[w[0]] * args.Apix))
 
     if args.plot:
         plt.plot(x, fsc)
