@@ -12,6 +12,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from torch.utils.data import DataLoader
+import torch.fft as fft
 
 try:
     import apex.amp as amp  # type: ignore
@@ -200,6 +201,7 @@ def add_args(parser):
             "geom_nohighf",
             "linear_lowf",
             "gaussian",
+            "rmfn",
             "none",
         ),
         default="gaussian",
@@ -242,6 +244,7 @@ def save_checkpoint(
 ):
     model.eval()
     vol = model.eval_volume(lattice.coords, lattice.D, lattice.extent, norm, barf=barf)
+    
     mrc.write(out_mrc, vol.astype(np.float32), Apix=Apix)
     torch.save(
         {
@@ -264,7 +267,8 @@ def train(
     ctf_params=None,
     use_amp=False,
     scaler=None,
-    barf=None
+    barf=None,
+    enc_type=None
 ):
     model.train()
     optim.zero_grad()
@@ -276,13 +280,18 @@ def train(
         # reconstruct circle of pixels instead of whole image
         mask = lattice.get_circular_mask(D // 2)
         yhat = model(lattice.coords[mask] @ rot, barf=barf).view(B, -1)
+        #yhat = fft.fftshift(fft.fft2(model(lattice.coords[mask] @ rot, barf=barf)), dim=(-2, -1)).view(B, -1)
         if ctf_params is not None:
             freqs = lattice.freqs2d[mask]
             freqs = freqs.unsqueeze(0).expand(B, *freqs.shape) / ctf_params[:, 0].view(
                 B, 1, 1
             )
             yhat *= ctf.compute_ctf(freqs, *torch.split(ctf_params[:, 1:], 1, 1))
+        if enc_type=='rmfn':
+            band = model.decoder.get_band()
+            y = model.decoder.filter(img=y, band=band)
         y = y.view(B, -1)[:, mask]
+        #y = fft.fftshift(fft.fft2(y), dim=(-2, -1)).real.view(B, -1)[:, mask]
         if trans is not None:
             y = lattice.translate_ht(y, trans.unsqueeze(1), mask).view(B, -1)
         return F.mse_loss(yhat, y)
@@ -509,12 +518,21 @@ def main(args):
         enc_dim = args.pe_dim if args.pe_dim else D//2
         barf_end_iter = args.barf_epochs * Nimg
         barf_schedule = get_barf_schedule(barf_end_iter, enc_dim)
+    elif args.pe_type=='rmfn':
+        rmfn_schedule = [6, 11]
 
     # train
     data_generator = DataLoader(data, batch_size=args.batch_size, shuffle=True)
     epoch = None
     for epoch in range(start_epoch, args.num_epochs):
         t2 = dt.now()
+
+        if args.pe_type=='rmfn' and (epoch+1) in rmfn_schedule:
+            model.decoder.stop_after += 1
+            logger.info( "Unfreezing layer {} and start training on its output\n".format(
+                model.decoder.stop_after + 1))
+            model.decoder.bacon_layers[model.decoder.stop_after].freeze = False
+
         loss_accum = 0
         batch_it = 0
         for batch, ind in data_generator:
@@ -524,7 +542,9 @@ def main(args):
                 pose_optimizer.zero_grad()
             r, t = posetracker.get_pose(ind)
             c = ctf_params[ind] if ctf_params is not None else None
+            
             barf = barf_schedule(epoch * Nimg + batch_it) if args.barf_epochs else None
+            
             loss_item = train(
                 model,
                 lattice,
@@ -535,7 +555,8 @@ def main(args):
                 c,
                 use_amp=args.amp,
                 scaler=scaler,
-                barf=barf
+                barf=barf,
+                enc_type=args.pe_type
             )
             if pose_optimizer is not None and epoch >= args.pretrain:
                 pose_optimizer.step()

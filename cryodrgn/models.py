@@ -10,6 +10,7 @@ from torch.nn.parallel import DataParallel
 from cryodrgn import fft, lie_tools, utils
 import cryodrgn.config
 from cryodrgn.lattice import Lattice
+from cryodrgn.rmfn_modules import FrequencyMarchingBACON, BACON
 
 Norm = Sequence[Any]  # mean, std
 
@@ -260,7 +261,11 @@ class PositionalDecoder(Decoder):
         self.enc_dim = self.D2 if enc_dim is None else enc_dim
         self.enc_type = enc_type
         self.in_dim = 3 * (self.enc_dim) * 2 + self.zdim
-        self.decoder = ResidLinearMLP(self.in_dim, nlayers, hidden_dim, 1, activation)
+        if enc_type=='rmfn':
+            self.decoder = FrequencyMarchingBACON(3, hidden_dim, 1, hidden_layers=nlayers, frequency=(D, D, D))
+            #self.decoder = BACON(3, hidden_dim, 1, hidden_layers=nlayers, staged=True, frequency=(D, D, D))
+        else:
+            self.decoder = ResidLinearMLP(self.in_dim, nlayers, hidden_dim, 1, activation)
 
         if enc_type == "gaussian":
             # We construct 3 * self.enc_dim random vector frequences, to match the original positional encoding:
@@ -279,6 +284,8 @@ class PositionalDecoder(Decoder):
 
     def positional_encoding_geom(self, coords, barf=None):
         """Expand coordinates in the Fourier basis with geometrically spaced wavelengths from 2/D to 2pi"""
+        if self.enc_type == "rmfn":
+            return coords
         if self.enc_type == "gaussian":
             return self.random_fourier_encoding(coords)
         #freqs = torch.arange(self.enc_dim, dtype=torch.float, device=coords.device)
@@ -441,7 +448,10 @@ class FTPositionalDecoder(Decoder):
         self.enc_type = enc_type
         self.enc_dim = self.D2 if enc_dim is None else enc_dim
         self.in_dim = 3 * (self.enc_dim) * 2 + self.zdim
-        self.decoder = ResidLinearMLP(self.in_dim, nlayers, hidden_dim, 2, activation)
+        if enc_type=='rmfn':
+            self.decoder = FrequencyMarchingBACON(3, hidden_dim, 2, hidden_layers=nlayers, frequency=(D, D, D))
+        else:
+            self.decoder = ResidLinearMLP(self.in_dim, nlayers, hidden_dim, 2, activation)
 
         if enc_type == "gaussian":
             # We construct 3 * self.enc_dim random vector frequences, to match the original positional encoding:
@@ -460,6 +470,8 @@ class FTPositionalDecoder(Decoder):
 
     def positional_encoding_geom(self, coords: Tensor, barf=None) -> Tensor:
         """Expand coordinates in the Fourier basis with geometrically spaced wavelengths from 2/D to 2pi"""
+        if self.enc_type == 'rmfn':
+            return coords
         if self.enc_type == "gaussian":
             return self.random_fourier_encoding(coords)
         #freqs = torch.arange(self.enc_dim, dtype=torch.float, device=coords.device)
@@ -787,7 +799,7 @@ def get_decoder(
         if domain == "hartley":
             model = ResidLinearMLP(in_dim, layers, dim, 1, activation)
         else:
-            model = FTSliceDecoder(in_dim, D, layers, dim, activation)
+            model = FTSliceDecoder(in_dim, D, layers, dim, activation)        
     else:
         model_t = PositionalDecoder if domain == "hartley" else FTPositionalDecoder
         model = model_t(
