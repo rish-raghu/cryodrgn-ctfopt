@@ -26,24 +26,42 @@ To install cryoDRGN, git clone the source code and install the following depende
 ## Data
 
 ## Homogenous Reconstruction with Pose Supervision
-Run the `train_nn` command with ground truth poses in order to train a homogenous model and output a reconstruction after each epoch. We report results for three built-in positional encoding types, which can be set with the `pe-type` argument: _gaussian_, _geom_ft_, and _geom_lowf_.
+Run the `train_nn` command with ground truth poses in order to train a homogenous model and output a reconstruction after each epoch. We report results for three built-in positional encoding types, which can be set with the `pe-type` argument: _gaussian_, _geom_ft_, and _geom_lowf_. We use 10k images of the full dataset for the reported results, which can be specified with the `ind` parameter.
 	
-	$ cryodrgn train_nn data/homo/proj.snr0.1.mrcs --poses data/homo/poses.pkl --ctf data/homo/ctf.pkl --uninvert-data --pe-type gaussian --ind 10000.pkl -o recon
+	$ cryodrgn train_nn data/homo/proj.snr0.1.mrcs --poses data/homo/poses.pkl --ctf data/homo/ctf.pkl --uninvert-data --pe-type gaussian --ind data/homo/10000.pkl -o recon
 
 [Residual MFN](https://shekshaa.github.io/ResidualMFN/) can be trained in place of the positional encoding by supplying _rmfn_ to the `pe-type` argument as well.
 	
-	$ cryodrgn train_nn data/homo/proj.snr0.1.mrcs --poses data/homo/poses.pkl --ctf data/homo/ctf.pkl --uninvert-data --pe-type rmfn --ind 10000.pkl -o recon
+	$ cryodrgn train_nn data/homo/proj.snr0.1.mrcs --poses data/homo/poses.pkl --ctf data/homo/ctf.pkl --uninvert-data --pe-type rmfn --ind data/homo/10000.pkl -o recon
 
-[BARF](https://chenhsuanlin.bitbucket.io/bundle-adjusting-NeRF/) can be applied to any of the positional encodings using a geometric series of frequencies (`pe-type`==_geom_lowf_, _geom_ft_, _geom_full_, _geom_nohighf_) by supplying the `barf-epochs` parameter. If we set `barf-epochs` to 10, for example, the BARF $\alpha$ parameter will linearly increase from 0 to `pe-dim` during the first 10 epochs of training, after which it is held constant at `pe-dim`.
+[BARF](https://chenhsuanlin.bitbucket.io/bundle-adjusting-NeRF/) can be applied to any of the positional encodings using a geometric series of frequencies (`pe-type` = _geom_lowf_, _geom_ft_, _geom_full_, _geom_nohighf_) by supplying the `barf-epochs` parameter. If we set `barf-epochs` to 10, for example, the BARF $\alpha$ parameter will linearly increase from 0 to `pe-dim` during the first 10 epochs of training, after which it is held constant at `pe-dim`.
 
-	$ cryodrgn train_nn data/homo/proj.snr0.1.mrcs --poses data/homo/poses.pkl --ctf data/homo/ctf.pkl --uninvert-data --pe-type geom_lowf --barf-epochs 10 --ind 10000.pkl -o recon
+	$ cryodrgn train_nn data/homo/proj.snr0.1.mrcs --poses data/homo/poses.pkl --ctf data/homo/ctf.pkl --uninvert-data --pe-type geom_lowf --barf-epochs 10 --ind data/homo/10000.pkl -o recon
 
 To compute the FSC curves between the ground truth volume and the reconstructions at each epoch, and report the resolutions across training at the 0.143 and 0.5 FSC cutoffs, run the following two commands.
 
 	$ sh analysis_scripts/multifsc.sh data/homo/volume.256.mrc "recon/reconstruct.*.mrc" 1.64
-	$ python collatefsc.py "recon/reconstruct.*.fsc.txt" 3.28
+	$ python analysis_scripts/collatefsc.py "recon/reconstruct.*.fsc.txt" 3.28
 
 ## Homogenous _Ab initio_ Reconstruction 
+Run the `abinit_homo` command in order to train a homogenous model with pose search and output a reconstruction and pose after each epoch. We report results for three built-in positional encoding types, which can be set with the `pe-type` argument: _gaussian_, _geom_ft_, and _geom_lowf_. We use 10k images of the full dataset for the reported results, which can be specified with the `ind` parameter. We report results for a model that does pose search every 3 epochs, which can be set with the `ps-freq` parameter.
+
+	$ cryodrgn abinit_homo data/homo/proj.snr0.1.mrcs --ctf data/homo/ctf.pkl --ps-freq 3 --uninvert-data --pe-type gaussian --ind data/homo/10000.pkl -o recon
+	
+[BARF](https://chenhsuanlin.bitbucket.io/bundle-adjusting-NeRF/) can be applied to any of the positional encodings using a geometric series of frequencies (`pe-type` = _geom_lowf_, _geom_ft_, _geom_full_, _geom_nohighf_) by supplying the `barf-epochs` parameter. If we set `barf-epochs` to 10, for example, the BARF $\alpha$ parameter will linearly increase from 0 to `pe-dim` during _the pretraining epoch and_ the first 10 epochs of training, after which it is held constant at `pe-dim`.
+
+	$ cryodrgn abinit_homo data/homo/proj.snr0.1.mrcs --ctf data/homo/ctf.pkl --ps-freq 3 --uninvert-data --pe-type geom_lowf --ind ind/10000.pkl --barf-epochs 10 -o recon
+	
+To align the reconstructions with the ground truth volume, compute the FSC curves between the ground truth volume and the reconstructions, and report the resolutions across training at the 0.143 and 0.5 FSC cutoffs, run the following three commands. Note that since alignment can take a long time, an integer can be supplied as the last argument to `multialign.sh` and `collatefsc.py` - if this number is 3, for example, the reconstructions of epochs 3, 6, 9, etc. will be aligned.
+
+	$ sh multialign.sh data/homo/volume.256.mrc recon 3
+	$ sh multifsc.sh data/homo/volume.256.mrc "recon/reconstruct.*.align.mrc" 1.64
+	$ python collatefsc.py "recon/reconstruct.*.align.fsc.txt" 3.28 3
+
+Pose errors (rotation/translation) can be computed as well with the following:
+
+	$ python pose_error.py data/homo/poses.pkl recon/pose.*.pkl --ind ind/10000.pkl
+	
 
 ## Heterogenous Reconstruction with Pose Supervision
 
