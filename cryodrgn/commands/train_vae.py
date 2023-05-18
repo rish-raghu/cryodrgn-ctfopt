@@ -26,6 +26,7 @@ from cryodrgn.lattice import Lattice
 from cryodrgn.models import HetOnlyVAE, unparallelize
 from cryodrgn.pose import PoseTracker
 import cryodrgn.config
+from cryodrgn.barf_schedule import get_barf_schedule
 
 logger = logging.getLogger(__name__)
 
@@ -277,6 +278,11 @@ def add_args(parser):
         help="Type of positional encoding (default: %(default)s)",
     )
     group.add_argument(
+        "--barf-epochs",
+        type=int,
+        help="Number of epochs to scale up BARF parameter (default: no BARF)"
+    )
+    group.add_argument(
         "--feat-sigma",
         type=float,
         default=0.5,
@@ -317,6 +323,7 @@ def train_batch(
     yr=None,
     use_amp=False,
     scaler=None,
+    barf=None
 ):
     optim.zero_grad()
     model.train()
@@ -326,14 +333,14 @@ def train_batch(
     if scaler is not None:
         with torch.cuda.amp.autocast_mode.autocast():
             z_mu, z_logvar, z, y_recon, y_recon_tilt, mask = run_batch(
-                model, lattice, y, yt, rot, tilt, ctf_params, yr
+                model, lattice, y, yt, rot, tilt, ctf_params, yr, barf=barf
             )
             loss, gen_loss, kld = loss_function(
                 z_mu, z_logvar, y, yt, y_recon, mask, beta, y_recon_tilt, beta_control
             )
     else:
         z_mu, z_logvar, z, y_recon, y_recon_tilt, mask = run_batch(
-            model, lattice, y, yt, rot, tilt, ctf_params, yr
+            model, lattice, y, yt, rot, tilt, ctf_params, yr, barf=barf
         )
         loss, gen_loss, kld = loss_function(
             z_mu, z_logvar, y, yt, y_recon, mask, beta, y_recon_tilt, beta_control
@@ -363,7 +370,7 @@ def preprocess_input(y, yt, lattice, trans):
     return y, yt
 
 
-def run_batch(model, lattice, y, yt, rot, tilt=None, ctf_params=None, yr=None):
+def run_batch(model, lattice, y, yt, rot, tilt=None, ctf_params=None, yr=None, barf=None):
     use_tilt = yt is not None
     use_ctf = ctf_params is not None
     B = y.size(0)
@@ -389,13 +396,13 @@ def run_batch(model, lattice, y, yt, rot, tilt=None, ctf_params=None, yr=None):
 
     # decode
     mask = lattice.get_circular_mask(D // 2)  # restrict to circular mask
-    y_recon = model(lattice.coords[mask] / lattice.extent / 2 @ rot, z).view(B, -1)
+    y_recon = model(lattice.coords[mask] / lattice.extent / 2 @ rot, z=z, barf=barf).view(B, -1)
     if c is not None:
         y_recon *= c.view(B, -1)[:, mask]
 
     # decode the tilt series
     if use_tilt:
-        y_recon_tilt = model(lattice.coords[mask] / lattice.extent / 2 @ tilt @ rot, z)
+        y_recon_tilt = model(lattice.coords[mask] / lattice.extent / 2 @ tilt @ rot, z=z, barf=barf)
         if c is not None:
             y_recon_tilt *= c.view(B, -1)[:, mask]
     else:
@@ -803,6 +810,11 @@ def main(args):
             f"WARNING: --multigpu selected, but {torch.cuda.device_count()} GPUs detected"
         )
 
+    if args.barf_epochs:
+        enc_dim = args.pe_dim if args.pe_dim else D//2
+        barf_end_iter = args.barf_epochs * Nimg
+        barf_schedule = get_barf_schedule(barf_end_iter, enc_dim)
+
     # training loop
     data_generator = DataLoader(
         data, batch_size=args.batch_size, shuffle=True, num_workers=num_workers_per_gpu
@@ -824,6 +836,7 @@ def main(args):
             global_it = Nimg * epoch + batch_it
 
             beta = beta_schedule(global_it)
+            barf = barf_schedule(global_it) if args.barf_epochs else None
 
             yr = None
             if args.use_real:
@@ -848,6 +861,7 @@ def main(args):
                 yr=yr,
                 use_amp=args.amp,
                 scaler=scaler,
+                barf=barf
             )
             if pose_optimizer is not None and epoch >= args.pretrain:
                 pose_optimizer.step()
@@ -860,8 +874,8 @@ def main(args):
             if batch_it % args.log_interval == 0:
                 logger.info(
                     "# [Train Epoch: {}/{}] [{}/{} images] gen loss={:.6f}, kld={:.6f}, beta={:.6f}, "
-                    "loss={:.6f}".format(
-                        epoch + 1, num_epochs, batch_it, Nimg, gen_loss, kld, beta, loss
+                    "loss={:.6f}  barf={:.3f}".format(
+                        epoch + 1, num_epochs, batch_it, Nimg, gen_loss, kld, beta, loss, barf or -1
                     )
                 )
         logger.info(

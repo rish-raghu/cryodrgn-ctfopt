@@ -150,14 +150,14 @@ class HetOnlyVAE(nn.Module):
         z = torch.cat((coords, z.expand(*coords.shape[:-1], self.zdim)), dim=-1)
         return z
 
-    def decode(self, coords, z=None) -> torch.Tensor:
+    def decode(self, coords, z=None, barf=None) -> torch.Tensor:
         """
         coords: BxNx3 image coordinates
         z: Bxzdim latent coordinate
         """
         decoder = self.decoder
         assert isinstance(decoder, nn.Module)
-        retval = decoder(self.cat_z(coords, z) if z is not None else coords)
+        retval = decoder(self.cat_z(coords, z) if z is not None else coords, barf=barf)
         return retval
 
     # Need forward func for DataParallel -- TODO: refactor
@@ -514,9 +514,11 @@ class FTPositionalDecoder(Decoder):
                 else:
                     w[i] = 1
             if len(coords.shape)==4:
-                w = torch.tile(w, [coords.shape[0], coords.shape[1], coords.shape[2], 1]).to(device=coords.device)
+                w = torch.tile(w, [coords.shape[0], coords.shape[1], 3, 1]).to(device=coords.device)
             elif len(coords.shape)==3:
                 w = torch.tile(w, [coords.shape[0], coords.shape[1], 1]).to(device=coords.device)
+            #print("w ", w.shape, " s ", s.shape, " coords ", coords.shape, flush=True)
+            #print("encdim ", self.enc_dim, " indim ", self.in_dim, "zdim ", self.zdim, flush=True)
             s = w*s
             c = w*c
 
