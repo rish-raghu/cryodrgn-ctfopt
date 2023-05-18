@@ -1,4 +1,4 @@
-# CryoDRGN-ctfopt: Towards Coarse-to-Fine Optimization for 3D CryoEM Reconstruction
+# CryoDRGN-Ctfopt: Towards Coarse-to-Fine Optimization for 3D CryoEM Reconstruction
 
 CryoDRGN is a neural network based algorithm for heterogeneous cryo-EM reconstruction. In this project developed for the course COS526: Neural Rendering at Princeton, we attempt to integrate coarse-to-fine optimization strategies into CryoDRGN.
 
@@ -24,6 +24,7 @@ To install cryoDRGN, git clone the source code and install the following depende
     pip install .
 
 ## Data
+Download the data from [Google Drive](https://drive.google.com/drive/folders/1TVN54VXFq3bTmR-ltGqDw3hf8LlJt6t1?usp=sharing). A subset of the scripts used for generation of the datasets is in the `data_gen` directory. 
 
 ## Homogenous Reconstruction with Pose Supervision
 Run the `train_nn` command with ground truth poses in order to train a homogenous model and output a reconstruction after each epoch. We report results for three built-in positional encoding types, which can be set with the `pe-type` argument: _gaussian_, _geom_ft_, and _geom_lowf_. We use 10k images of the full dataset for the reported results, which can be specified with the `ind` parameter.
@@ -48,7 +49,7 @@ Run the `abinit_homo` command in order to train a homogenous model with pose sea
 
 	$ cryodrgn abinit_homo data/homo/proj.snr0.1.mrcs --ctf data/homo/ctf.pkl --ps-freq 3 --uninvert-data --pe-type gaussian --ind data/homo/10000.pkl -o recon
 	
-[BARF](https://chenhsuanlin.bitbucket.io/bundle-adjusting-NeRF/) can be applied to any of the positional encodings using a geometric series of frequencies (`pe-type` = _geom_lowf_, _geom_ft_, _geom_full_, _geom_nohighf_) by supplying the `barf-epochs` parameter. If we set `barf-epochs` to 10, for example, the BARF $\alpha$ parameter will linearly increase from 0 to `pe-dim` during _the pretraining epoch and_ the first 10 epochs of training, after which it is held constant at `pe-dim`.
+[BARF](https://chenhsuanlin.bitbucket.io/bundle-adjusting-NeRF/) can be applied to any of the positional encodings using a geometric series of frequencies (`pe-type` = _geom_lowf_, _geom_ft_, _geom_full_, _geom_nohighf_) by supplying the `barf-epochs` parameter. If we set `barf-epochs` to 10, for example, the BARF $\alpha$ parameter will linearly increase from 0 to `pe-dim` during _the pretraining epoch and_ the first 10 regular epochs of training, after which it is held constant at `pe-dim`.
 
 	$ cryodrgn abinit_homo data/homo/proj.snr0.1.mrcs --ctf data/homo/ctf.pkl --ps-freq 3 --uninvert-data --pe-type geom_lowf --ind ind/10000.pkl --barf-epochs 10 -o recon
 	
@@ -64,5 +65,10 @@ Pose errors (rotation/translation) can be computed as well with the following:
 	
 
 ## Heterogenous Reconstruction with Pose Supervision
+Run the `train_vae` command in order to train a heterogenous model with ground truth poses. We report results for the _geom_lowf_ positional encoding type, which can be set with the `pe-type` argument. The dimension of the latent space, representing protein conformation, can be specified with the `zdim` argument.
 
+	$ cryodrgn train_vae data/het/proj.snr0.0.txt --poses data/het/poses.pkl --ctf data/het/ctf.pkl --zdim 8 --uninvert-data --pe-type geom_lowf -o recon
 
+To visualize the learned latent space and produce reconstructions sampled from the latent space, run the following. The second argument specifies the 0-indexed epoch number you want to analyze the latent space for.
+	
+	$ cryodrgn analyze recon 19 --Apix 1.64
