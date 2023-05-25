@@ -1,6 +1,6 @@
-# CryoDRGN-Ctfopt: Towards Coarse-to-Fine Optimization for 3D CryoEM Reconstruction
+# CryoDRGN-CtfOpt: Towards Coarse-to-Fine Optimization for 3D CryoEM Reconstruction
 
-CryoDRGN is a neural network based algorithm for heterogeneous cryo-EM reconstruction. In this project developed for the course COS526: Neural Rendering at Princeton, we attempt to integrate coarse-to-fine optimization strategies into CryoDRGN.
+CryoDRGN is a neural network based algorithm for heterogeneous cryo-EM reconstruction. In this project developed for the course COS526: Neural Rendering at Princeton, we attempt to integrate coarse-to-fine optimization strategies into CryoDRGN. The project report can be found [here](https://drive.google.com/file/d/1ZuU-i5hVv6woIx91LF9HWpSMExnAU0x5/view?usp=share_link).
 
 ## Installation/dependencies:
 
